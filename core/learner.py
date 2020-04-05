@@ -123,7 +123,7 @@ class Learner(object):
                 if used_replay:
                     self.replay_memory.update_state_and_status(
                         learner_idx,
-                        tuple(t[:, self.flags.batch_size:].cpu() for t in agent_state),
+                        tuple(t[:, self.flags.batch_size:].cpu().detach() for t in agent_state),
                         mask[-1, self.flags.batch_size:].cpu())
 
                 timings.time("update replay")

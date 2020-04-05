@@ -24,13 +24,6 @@ Trajectory = collections.namedtuple(
         'initial_agent_state',
     ]
 )
-HyperParameters = collections.namedtuple(
-    'HyperParameters',
-    [
-        'discounting',
-        'entropy_cost'
-    ]
-)
 TrainingState = collections.namedtuple(
     'TrainingState',
     [
@@ -142,21 +135,6 @@ class ExperienceReplay(object):
             self.trajectories.pop(0)
         self.trajectories.append(trajectory)
         self.current_size += len(trajectory)
-
-
-@ray.remote
-class HyperParameterServer(object):
-    def __init__(self, flags):
-        self.flags = flags
-        initial_params = HyperParameters(discounting=flags.discounting, entropy_cost=flags.entropy_cost)
-        # Sampler is a beta distribution starting at a = b = 1.
-        # Perform policy gradient and add the hyper params as an input to the network.
-
-    def get_params(self):
-        pass
-
-    def update_results(self):
-        pass
 
 
 def create_env(flags):
