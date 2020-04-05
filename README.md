@@ -5,6 +5,9 @@ by Espeholt, Soyer, Munos et al.](https://arxiv.org/abs/1802.01561) and [LASER: 
 
 This is an extension of [TorchBeast](https://github.com/facebookresearch/torchbeast). Specifically, I took only the MonoBeast implementation and replaced the multiprocessing parallelism to use [Ray](https://github.com/ray-project/ray/). While this has been tested on a single machine, it should work out of the box on a cluster (once Ray has been properly set up).
 
+## Performance
+On my machine (6 core CPU and GTX 1080TI) I saw 3000 steps per second on the basic model (without the LSTM and ResNet), 2000 SPS with the LSTM and 900 SPS with LSTM and ResNet.
+
 ## Requirements
 
 gym[atari]>=0.14.0  # Installs gym and atari.
