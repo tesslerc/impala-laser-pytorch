@@ -24,7 +24,13 @@ Trajectory = collections.namedtuple(
         'initial_agent_state',
     ]
 )
-
+HyperParameters = collections.namedtuple(
+    'HyperParameters',
+    [
+        'discounting',
+        'entropy_cost'
+    ]
+)
 TrainingState = collections.namedtuple(
     'TrainingState',
     [
@@ -84,7 +90,7 @@ class ExperienceReplay(object):
         gym_env = create_env(self.flags)
         self.obs_shape, self.action_dim = gym_env.observation_space.shape, gym_env.action_space.n
 
-        net = AtariNet(gym_env.observation_space.shape[0], gym_env.action_space.n, self.flags.use_lstm)
+        net = AtariNet(gym_env.observation_space.shape[0], gym_env.action_space.n, self.flags.use_lstm, self.flags.use_resnet)
         self.agent_state = net.initial_state(batch_size=1)
 
         self.max_size = self.flags.replay_size
@@ -122,7 +128,7 @@ class ExperienceReplay(object):
     def update_state_and_status(self, learner_idx, agent_states, status_list):
         for traj_index in range(self.flags.replay_batch_size):
             # Either the reminder of the trajectory isn't relevant OR we finished with the trajectory
-            if status_list[learner_idx][-1][traj_index] == 0 or \
+            if status_list[learner_idx].item() == 0 or \
                     len(self.sampled_trajectories[learner_idx][traj_index]) < self.indices[learner_idx][traj_index] + self.flags.unroll_length:
                 self.indices[learner_idx][traj_index] = None
             else:
@@ -136,6 +142,21 @@ class ExperienceReplay(object):
             self.trajectories.pop(0)
         self.trajectories.append(trajectory)
         self.current_size += len(trajectory)
+
+
+@ray.remote
+class HyperParameterServer(object):
+    def __init__(self, flags):
+        self.flags = flags
+        initial_params = HyperParameters(discounting=flags.discounting, entropy_cost=flags.entropy_cost)
+        # Sampler is a beta distribution starting at a = b = 1.
+        # Perform policy gradient and add the hyper params as an input to the network.
+
+    def get_params(self):
+        pass
+
+    def update_results(self):
+        pass
 
 
 def create_env(flags):

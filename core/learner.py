@@ -64,6 +64,7 @@ class Learner(object):
         params_id = ray.put({k: v.cpu() for k, v in self.net.state_dict().items()})
 
         rollouts = [actor.act.remote(params_id, params_idx) for actor in self.actors]
+        trajectories = [[] for _ in range(self.flags.num_actors)]
         stats = {}
         step = 0
         start_step = 0
@@ -75,10 +76,9 @@ class Learner(object):
 
         def batch_and_learn(learner_idx):
             """Thread target for the learning process."""
-            nonlocal step, stats, params_idx, params_id, rollouts, last_log_time, last_time, start_step
+            nonlocal step, stats, params_idx, params_id, rollouts, trajectories, last_log_time, last_time, start_step
             timings = prof.Timings()
             batch = []
-            learning_started = self.flags.learn_start == 0
 
             while step < self.flags.total_steps:
                 # Obtain batch of data. Learners don't do this in parallel to ensure maximal throughput.
@@ -92,51 +92,59 @@ class Learner(object):
                         # start a new task on the same actor object
                         rollouts.extend([self.actors[actor_id].act.remote(params_id, params_idx)])
 
+                        if self.replay_memory is not None:
+                            # add trajectory to replay memory
+                            for idx in range(self.flags.unroll_length + 1):
+                                transition = {}
+                                for key in rollout:
+                                    if key not in ['initial_agent_state', 'mask']:
+                                        transition[key] = rollout[key][idx]
+                                trajectories[actor_id].append(transition)
+                                if transition["done"]:
+                                    self.replay_memory.add_trajectory(trajectories[actor_id])
+                                    trajectories[actor_id] = []
+
                     timings.time("dequeue")
 
-                if learning_started:
-                    batch, agent_state, used_replay = get_batch(learner_idx, batch, self.replay_memory, timings, self.flags)
+                batch, agent_state, used_replay = get_batch(learner_idx, batch, self.replay_memory, timings, self.flags, step)
 
-                    # Perform a learning step and update the network parameters.
-                    with learn_lock:
-                        tmp_stats, agent_state, mask = learn(
-                            self.flags, self.net, batch, agent_state, self.optimizer, self.scheduler, step
-                        )
-                        params_idx += 1
-                        params_id = ray.put({k: v.cpu() for k, v in self.net.state_dict().items()})
-                        timings.time("learn")
-                    batch = []
+                # Perform a learning step and update the network parameters.
+                with learn_lock:
+                    tmp_stats, agent_state, mask = learn(
+                        self.flags, self.net, batch, agent_state, self.optimizer, self.scheduler
+                    )
+                    params_idx += 1
+                    params_id = ray.put({k: v.cpu() for k, v in self.net.state_dict().items()})
+                    timings.time("learn")
+                batch = []
 
-                    # For LASER (https://arxiv.org/abs/1909.11583) update the replay status. As the memory treats each
-                    # learner individually, they can access the data structures in parallel.
-                    if used_replay:
-                        self.replay_memory.update_state_and_status(
-                            learner_idx,
-                            tuple(t[:, self.flags.batch_size:].cpu() for t in agent_state),
-                            mask[:, self.flags.batch_size:].cpu())
+                # For LASER (https://arxiv.org/abs/1909.11583) update the replay status. As the memory treats each
+                # learner individually, they can access the data structures in parallel.
+                if used_replay:
+                    self.replay_memory.update_state_and_status(
+                        learner_idx,
+                        tuple(t[:, self.flags.batch_size:].cpu() for t in agent_state),
+                        mask[-1, self.flags.batch_size:].cpu())
 
-                    timings.time("update replay")
+                timings.time("update replay")
 
                 # Logging results in updating the step counter AND printing to console.
                 # This requires locking for concurrency.
                 with log_lock:
                     step += self.flags.unroll_length * self.flags.batch_size
 
-                    if learning_started:
-                        if 'episode_returns' in stats.keys():
-                            tmp_stats['episode_returns'] += stats['episode_returns']
-                        stats = tmp_stats
+                    if 'episode_returns' in stats.keys():
+                        tmp_stats['episode_returns'] += stats['episode_returns']
+                    stats = tmp_stats
 
-                        if self.timer() - last_log_time > 5:
-                            last_log_time = self.timer()
-                            print_tuple = get_stats(self.flags, stats, self.timer, last_time, step, start_step)
-                            start_step = step
-                            last_time = self.timer()
-                            log(self.flags, print_tuple, self.logger, step)
-                            timings.time("log")
+                    if self.timer() - last_log_time > 5:
+                        last_log_time = self.timer()
+                        print_tuple = get_stats(self.flags, stats, self.timer, last_time, step, start_step)
+                        start_step = step
+                        last_time = self.timer()
+                        log(self.flags, print_tuple, self.logger, step)
+                        timings.time("log")
 
-                if step >= self.flags.learn_start:
-                    learning_started = True
             if learner_idx == 0:
                 self.logger.error("Batch and learn: %s", timings.summary())
 
@@ -193,9 +201,9 @@ def log(flags, print_tuple, logger, step):
             )
 
 
-def get_batch(learner_idx, online_batch, replay_memory, timings, flags):
+def get_batch(learner_idx, online_batch, replay_memory, timings, flags, step):
     replay_batch = None
-    if replay_memory is not None:
+    if replay_memory is not None and step >= flags.learn_start:
         replay_batch = replay_memory.sample(learner_idx)
 
     timings.time("replay")
@@ -234,7 +242,6 @@ def learn(
         initial_agent_state,
         optimizer,
         scheduler,
-        step,
 ):
     """Performs a learning (optimization) step."""
     learner_outputs, next_agent_state = model(batch, initial_agent_state)
@@ -295,7 +302,8 @@ def learn(
     optimizer.zero_grad()
 
     total_loss.backward()
-    nn.utils.clip_grad_norm_(model.parameters(), flags.grad_norm_clipping)
+    if flags.grad_norm_clipping > 0:
+        nn.utils.clip_grad_norm_(model.parameters(), flags.grad_norm_clipping)
     optimizer.step()
     scheduler.step()
 
