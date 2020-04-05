@@ -38,6 +38,8 @@ $ python3.6 monobeast.py \
     --use_resnet
 ```
 
+For LASER, set the flags ```--replay_size``` and ```--replay_ratio``` which define both the size of the replay memory and the relative number of replay samples per each on-policy sample taken.
+
 Similar to MonoBeast, the implementation is simple. Each actor runs in a separate process with its dedicated instance of the environment and runs the PyTorch model on the CPU to create actions. The resulting rollout trajectories (environment-agent interactions) are sent to the learner. In the main process, the learner consumes these rollouts and uses them to update the model's weights. The learner is parallelised using multithreading, such as building the batch while the gradient step is performed.
 
 ## (Very rough) overview of the system (taken from TorchBeast readme.md)
